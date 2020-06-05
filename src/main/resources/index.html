@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Hearts demo</title>
+</head>
+<script>
+    const host = window.location.hostname + ":" + window.location.port
+    const baseURL = window.location.protocol + "//" + host
+    console.log(baseURL)
+    const urlParams = new URLSearchParams(window.location.search);
+    const createGame = players => {
+        const fetchData = {
+            method: 'POST',
+            body: {},
+            headers: new Headers()
+        }
+        const url = baseURL + "/games?players=" + players
+        fetch(url, fetchData)
+            .then(resp => resp.json())
+            .then(resp => {
+                const lobby = document.getElementById("lobby")
+                const gameEl = document.createElement("p")
+                gameEl.innerText = "Game " + resp.gameID
+                lobby.appendChild(gameEl)
+                let i = 1
+                resp.seatHrefs.forEach(seat => {
+                    const wrapper = document.createElement("p")
+                    const joinSeat = document.createElement("a")
+                    joinSeat.href = seat
+                    joinSeat.target = "_blank"
+                    joinSeat.innerText = 'Join seat ' + i
+                    i++
+                    wrapper.appendChild(joinSeat)
+                    lobby.appendChild(wrapper)
+                })
+            })
+    }
+    const gameID = urlParams.get('gameID')
+    const seatID = urlParams.get('seatID')
+    window.onload = () => {
+        if (gameID == null) {
+            document.getElementById("join").remove()
+            document.getElementById("play").remove()
+        } else {
+            document.getElementById("lobby").remove()
+            document.getElementById("game").innerText = "Game: " + gameID
+            document.getElementById("seat").innerText = "Seat: " + seatID
+        }
+    }
+    const toCard = card => {
+        const el = document.createElement("div")
+        el.id = card.value + "-" + card.suit
+        el.classList.add('card')
+        el.classList.add(card.suit.toLowerCase())
+        let suitUnicode;
+        switch (card.suit) {
+            case 'Hearts':
+                suitUnicode = '♥';
+                break;
+            case 'Diamonds':
+                suitUnicode = '♦';
+                break;
+            case 'Clubs':
+                suitUnicode = '♣';
+                break;
+            case 'Spades':
+                suitUnicode = '♠';
+                break;
+        }
+        const tl = document.createElement("span")
+        tl.innerText = suitUnicode
+        tl.classList.add("suit-top-left");
+        const br = document.createElement("span")
+        br.innerText = suitUnicode
+        br.classList.add("suit-bottom-right");
+        const v = document.createElement("span")
+        v.innerText = parseInt(card.value) || card.value.substring(0,1)
+        v.classList.add("value")
+        el.appendChild(tl)
+        el.appendChild(v)
+        el.appendChild(br)
+        return el
+    }
+    const joinGame = () => {
+        const name = document.getElementById("nameField").value
+        const fetchData = {
+            method: 'POST',
+            body: name,
+            headers: new Headers()
+        }
+        const url = baseURL + "/games/" + gameID + "/seats/" + seatID
+        fetch(url, fetchData)
+            .then(resp => resp.json())
+            .then(resp => console.log(resp))
+        const socket = new WebSocket("ws://" + host + "/ws/games/" + gameID + "/seats/" + seatID + "/listen")
+        socket.addEventListener('open', event => {
+            document.getElementById("events").innerHTML = "Welcome, " + name
+        })
+        socket.addEventListener('message', event => {
+            const gameEvent = JSON.parse(event.data)
+            console.log(gameEvent.eventType)
+            if (gameEvent.eventType === "ReceiveHand") {
+                const hand = document.getElementById("hand")
+                document.getElementById("trick").innerHTML = ''
+                hand.innerHTML = ''
+                gameEvent.data.hand.forEach(card => {
+                    const el = toCard(card)
+                    el.setAttribute('draggable', true)
+                    el.addEventListener('dragstart', drag)
+                    el.addEventListener('dragover', allowDrop)
+                    el.addEventListener('drop', drop)
+                    el.addEventListener('click', event => {
+                        const c = document.getElementById(el.id)
+                        if (c.classList.contains('selected')) {
+                            c.classList.remove('selected')
+                        } else {
+                            c.classList.add('selected')
+                        }
+                    })
+                    hand.appendChild(el)
+                })
+                const pass = document.createElement('button')
+                pass.innerHTML = 'Pass'
+                pass.id = 'pass'
+                pass.addEventListener('click', event => {
+                    const toPass = Array.from(document.getElementsByClassName('selected'))
+                    if (toPass.length !== gameEvent.data.passCount) {
+                        document.getElementById("events").innerHTML = 'Choose ' + gameEvent.data.passCount + ' cards'
+                    } else {
+                        passCards(gameID, seatID,
+                            toPass.map(el => {
+                                const id = el.id.split('-', 2)
+                                const cardValue = id[0]
+                                const cardSuit = id[1]
+                                const data = {
+                                    value: cardValue,
+                                    suit: cardSuit
+                                }
+                                return data
+                            }))
+                    }
+                })
+                hand.appendChild(pass)
+                document.getElementById("events").innerHTML = "Choose cards to pass"
+            } else if (gameEvent.eventType === "ReceivePass") {
+                const hand = document.getElementById("hand")
+                gameEvent.data.forEach(card => {
+                    const el = toCard(card)
+                    el.setAttribute('draggable', true)
+                    el.addEventListener('dragstart', drag)
+                    el.addEventListener('dragover', allowDrop)
+                    el.addEventListener('drop', drop)
+                    el.addEventListener('click', event => {
+                        const c = document.getElementById(el.id)
+                        if (c.classList.contains('selected')) {
+                            c.classList.remove('selected')
+                        } else {
+                            c.classList.add('selected')
+                        }
+                    })
+                    hand.appendChild(el)
+                })
+                const play = document.createElement('button')
+                play.innerHTML = 'Play card'
+                play.id = 'playCard'
+                play.addEventListener('click', event => {
+                    const toPlay = Array.from(document.getElementsByClassName('selected'))
+                    if (toPlay.length !== 1) {
+                        document.getElementById("events").innerHTML = 'Choose a single card'
+                    } else {
+                        el = toPlay[0]
+                        const id = el.id.split('-', 2)
+                        const cardValue = id[0]
+                        const cardSuit = id[1]
+                        playCard(gameID, seatID, cardValue, cardSuit)
+                    }
+                })
+                hand.appendChild(play)
+                document.getElementById("events").innerHTML = "Pass received"
+            } else if (gameEvent.eventType === "RequestLead") {
+                document.getElementById("events").innerHTML = "Your lead"
+            } else if (gameEvent.eventType === "RequestPlay") {
+                document.getElementById("events").innerHTML = "Your turn, lead is " + gameEvent.data
+            } else if (gameEvent.eventType === "CardPlayed") {
+                const trick = document.getElementById("trick")
+                const card = toCard(gameEvent.data)
+                card.id = card.id + '-trick'
+                trick.appendChild(card)
+                document.getElementById("events").innerHTML = "Card played"
+            } else if (gameEvent.eventType === "GameStarted") {
+                const players = document.getElementById("players")
+                gameEvent.data.forEach(player => {
+                    const el = document.createElement("p")
+                    el.classList.add('player')
+                    el.id = 'player-' + player
+                    const pName = document.createElement("span")
+                    pName.classList.add('player-name')
+                    pName.innerText = player
+                    const pScore = document.createElement("span")
+                    pScore.innerText = '0'
+                    pScore.id = 'player-' + player + '-score'
+                    el.appendChild(pName)
+                    el.appendChild(pScore)
+                    players.appendChild(el)
+                })
+                document.getElementById("events").innerHTML = "Game started"
+            } else if (gameEvent.eventType === "HandEnded") {
+                gameEvent.data.forEach(result => {
+                    const currentScore = parseInt(document.getElementById('player-' + result.player + '-score').innerText)
+                    document.getElementById('player-' + result.player + '-score').innerText = currentScore + result.pointsTaken
+                })
+            } else if (gameEvent.eventType === "TrickEnded") {
+                document.getElementById("trick").innerHTML = ''
+                document.getElementById("events").innerHTML = "Trick won by " + gameEvent.data.winner
+            }
+        })
+        document.getElementById("join").remove()
+    }
+    const passCards = (gameID, seatID, cards) => {
+        const fetchData = {
+            method: 'POST',
+            body: JSON.stringify(cards),
+            headers: {
+              'Content-Type': 'application/json'
+            }
+        }
+        const url = baseURL + "/games/" + gameID + "/seats/" + seatID + "/passes"
+        fetch(url, fetchData)
+            .then(resp => {
+                if (!resp.ok) {
+                    throw Error(resp.text())
+                } else {
+                    return resp.text()
+            }})
+            .then(resp => {
+                document.getElementById('pass').remove()
+            })
+            .then(resp => {
+                cards.forEach(card => {
+                    document.getElementById(card.value + "-" + card.suit).remove()
+                })
+                const evt = document.getElementById("events")
+                if (evt.innerHTML != 'Pass received') {
+                    document.getElementById("events").innerHTML = "Waiting for pass"
+                }
+            })
+            .catch(err => console.log(err))
+    }
+    const playCard = (gameID, seatID, cardValue, cardSuit) => {
+        const data = {
+            value: cardValue,
+            suit: cardSuit
+        }
+        const fetchData = {
+            method: 'POST',
+            body: JSON.stringify(data),
+            headers: {
+              'Content-Type': 'application/json'
+            }
+        }
+        const url = baseURL + "/games/" + gameID + "/seats/" + seatID + "/plays"
+        fetch(url, fetchData)
+            .then(resp => {
+                if (!resp.ok) {
+                    throw Error(resp.text())
+                } else {
+                    return resp.text()
+            }})
+            .then(resp => {
+                document.getElementById(cardValue + "-" + cardSuit).remove()
+            })
+            .catch(err => console.log(err))
+    }
+    const allowDrop = ev => {
+      ev.preventDefault();
+      ev.dataTransfer.dropEffect = "move"
+    }
+
+    const drag = ev => {
+      ev.dataTransfer.setData("text", ev.target.id);
+      ev.dataTransfer.effectAllowed = "move"
+    }
+
+    const drop = ev => {
+      ev.preventDefault();
+      var data = ev.dataTransfer.getData("text");
+      ev.target.closest('.card').insertAdjacentElement('beforebegin', document.getElementById(data));
+    }
+</script>
+<link rel="stylesheet" href="client/styles.css">
+<body>
+    <div id="lobby">
+        <h1>Lobby</h1>
+        <button onclick="createGame(4)">Create 4-player game</button>
+        <button onclick="createGame(3)">Create 3-player game</button>
+    </div>
+    <div id="join">
+        <h1>Join</h1>
+        <p id="game"></p>
+        <p id="seat"></p>
+        <input id="nameField" placeholder="Name" type="text">
+        <button onclick="joinGame()">Join</button>
+    </div>
+    <div id="play">
+        <h1>Play</h1>
+        <h3>Events</h3>
+        <div id="events"></div>
+        <h3>Players</h3>
+        <div id="players"></div>
+        <h3>Trick</h3>
+        <div id="trick"></div>
+        <h3>Hand</h3>
+        <div id="hand"></div>
+    </div>
+</body>
+</html>
