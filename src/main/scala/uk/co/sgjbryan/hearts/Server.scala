@@ -13,6 +13,7 @@ import akka.stream.{Materializer, OverflowStrategy}
 import akka.stream.scaladsl.{Flow, Sink, Source}
 import akka.stream.typed.scaladsl.ActorSource
 import akka.util.Timeout
+import com.typesafe.config.ConfigFactory
 import spray.json._
 import uk.co.sgjbryan.hearts.game.{Game, Seat}
 import uk.co.sgjbryan.hearts.lobby.Lobby
@@ -30,6 +31,7 @@ object Server extends App with JsonSupport {
   import Directives._
   import classicSystem.dispatcher
 
+  lazy val baseURL = ConfigFactory.load().getString("baseURL")
 
   //TODO: include seatSecret (either server-encrypted seatID or generated and returned when seat taken) for auth
   //TODO: we could keep the actor in session rather than running 'findSeat' each time
@@ -155,11 +157,11 @@ object Server extends App with JsonSupport {
   implicit val materializer: Materializer = Materializer.matFromSystem(lobby) //Explicitly specify the system provider
   val bindingFuture = Http().bindAndHandle(
     Route.handlerFlow(listenRoute ~ lobbyRoute ~ joinRoute ~ playRoute ~ clientRoute ~ passRoute),
-    "localhost",
+    "0.0.0.0",
     8080
   )
 
-  println(s"Server online at http://localhost:8080/")
+  println(s"Server online at http://0.0.0.0:8080/")
   StdIn.readLine() // This doesn't work with revolver...
 
   bindingFuture

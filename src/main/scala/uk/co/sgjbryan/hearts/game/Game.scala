@@ -5,7 +5,7 @@ import java.util.UUID
 
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import uk.co.sgjbryan.hearts.GameSettings
+import uk.co.sgjbryan.hearts.{GameSettings, Server}
 import uk.co.sgjbryan.hearts.utils.{Card, GameCreationResponse}
 
 import scala.util.Random
@@ -28,7 +28,7 @@ object Game {
         actor = context.spawnAnonymous(Seat(seatID, context.self))
       } yield (seatID, actor)).toMap
       replyTo ! GameCreationResponse(gameID, seats.keys.toList, seats.keys.toList map {
-        seatID => new URL(s"http://localhost:8080/client?gameID=$gameID&seatID=$seatID")
+        seatID => new URL(s"${Server.baseURL}/client?gameID=$gameID&seatID=$seatID")
       })
       new ScheduledGame(gameID, settings.deck, seats, settings).awaitingPlayers()
   }
