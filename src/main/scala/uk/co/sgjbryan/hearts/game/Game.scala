@@ -44,7 +44,7 @@ object Game {
       gameID,
       seats.keys.toList,
       seats.keys.toList map { seatID =>
-        new URL(s"${Server.baseURL}/play/game/$gameID/seat/$seatID")
+        new URL(s"${Server.clientHost}/play/game/$gameID/seat/$seatID")
       }
     )
     new ScheduledGame(gameID, settings.deck, seats, settings).awaitingPlayers()

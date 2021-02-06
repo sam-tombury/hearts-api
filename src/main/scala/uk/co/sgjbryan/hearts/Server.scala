@@ -43,7 +43,7 @@ object Server extends App with JsonSupport {
   import Directives._
   import lobby.executionContext
 
-  lazy val baseURL = ConfigFactory.load().getString("baseURL")
+  lazy val clientHost = ConfigFactory.load().getString("clientHost")
 
   //TODO: include seatSecret (either server-encrypted seatID or generated and returned when seat taken) for auth
   //TODO: we could keep the actor in session rather than running 'findSeat' each time
@@ -194,16 +194,10 @@ object Server extends App with JsonSupport {
         }
     }
 
-  val clientRoute = path("client") {
-    getFromResource("index.html")
-  } ~ path("client" / "styles.css") {
-    getFromResource("styles.css")
-  }
-
   val bindingFuture = Http()
     .newServerAt("0.0.0.0", 8080)
     .bind(
-      listenRoute ~ lobbyRoute ~ joinRoute ~ playRoute ~ clientRoute ~ passRoute
+      listenRoute ~ lobbyRoute ~ joinRoute ~ playRoute ~ passRoute
     )
 
   println(s"Server online at http://0.0.0.0:8080/")
