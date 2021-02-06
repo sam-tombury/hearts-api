@@ -29,3 +29,9 @@ build
 
 #general
 *.class
+
+# metals
+.metals/
+.bloop/
+.ammonite/
+metals.sbt

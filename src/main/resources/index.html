@@ -1,5 +1,6 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <title>Hearts demo</title>
@@ -50,7 +51,7 @@
     }
     const toCard = card => {
         const el = document.createElement("div")
-        el.id = card.value + "-" + card.suit
+        el.id = c
         el.classList.add('card')
         el.classList.add(card.suit.toLowerCase())
         let suitUnicode;
@@ -75,7 +76,7 @@
         br.innerText = suitUnicode
         br.classList.add("suit-bottom-right");
         const v = document.createElement("span")
-        v.innerText = parseInt(card.value) || card.value.substring(0,1)
+        v.innerText = parseInt(card.value) || card.value.substring(0, 1)
         v.classList.add("value")
         el.appendChild(tl)
         el.appendChild(v)
@@ -93,7 +94,8 @@
         fetch(url, fetchData)
             .then(resp => resp.json())
             .then(resp => console.log(resp))
-        const socket = new WebSocket("ws://" + host + "/ws/games/" + gameID + "/seats/" + seatID + "/listen")
+        const websocketProtocol = (window.location.protocol === "https:") ? "wss:" : "ws:"
+        const socket = new WebSocket(websocketProtocol + "//" + host + "/ws/games/" + gameID + "/seats/" + seatID + "/listen")
         socket.addEventListener('open', event => {
             document.getElementById("events").innerHTML = "Welcome, " + name
         })
@@ -101,6 +103,9 @@
             const gameEvent = JSON.parse(event.data)
             console.log(gameEvent.eventType)
             if (gameEvent.eventType === "ReceiveHand") {
+                Array.from(document.getElementsByClassName('hand-score')).forEach(s => {
+                    s.innerText = 0
+                })
                 const hand = document.getElementById("hand")
                 document.getElementById("trick").innerHTML = ''
                 hand.innerHTML = ''
@@ -142,7 +147,7 @@
                     }
                 })
                 hand.appendChild(pass)
-                document.getElementById("events").innerHTML = "Choose cards to pass"
+                document.getElementById("events").innerHTML = "Choose " + gameEvent.data.passCount + " cards to pass to " + gameEvent.data.passTo + ". " + gameEvent.data.firstLead + " will lead first."
             } else if (gameEvent.eventType === "ReceivePass") {
                 const hand = document.getElementById("hand")
                 gameEvent.data.forEach(card => {
@@ -184,10 +189,10 @@
                 document.getElementById("events").innerHTML = "Your turn, lead is " + gameEvent.data
             } else if (gameEvent.eventType === "CardPlayed") {
                 const trick = document.getElementById("trick")
-                const card = toCard(gameEvent.data)
+                const card = toCard(gameEvent.data.card)
                 card.id = card.id + '-trick'
                 trick.appendChild(card)
-                document.getElementById("events").innerHTML = "Card played"
+                document.getElementById("events").innerHTML = gameEvent.data.toPlay + "'s turn"
             } else if (gameEvent.eventType === "GameStarted") {
                 const players = document.getElementById("players")
                 gameEvent.data.forEach(player => {
@@ -200,8 +205,13 @@
                     const pScore = document.createElement("span")
                     pScore.innerText = '0'
                     pScore.id = 'player-' + player + '-score'
+                    const pHandScore = document.createElement("span")
+                    pHandScore.innerText = '0'
+                    pHandScore.id = 'player-' + player + '-hand-score'
+                    pHandScore.classList.add('hand-score')
                     el.appendChild(pName)
                     el.appendChild(pScore)
+                    el.appendChild(pHandScore)
                     players.appendChild(el)
                 })
                 document.getElementById("events").innerHTML = "Game started"
@@ -211,8 +221,18 @@
                     document.getElementById('player-' + result.player + '-score').innerText = currentScore + result.pointsTaken
                 })
             } else if (gameEvent.eventType === "TrickEnded") {
+                const oldTrick = document.getElementById("trick").cloneNode(true)
+                oldTrick.id = 'old-trick'
+                document.getElementById("last-trick").appendChild(oldTrick)
+                setTimeout(() => {
+                    document.getElementById("last-trick").innerHTML = ''
+                }, 7000)
                 document.getElementById("trick").innerHTML = ''
-                document.getElementById("events").innerHTML = "Trick won by " + gameEvent.data.winner
+                const winner = gameEvent.data.winner
+                document.getElementById("events").innerHTML = "Trick won by " + winner
+                const currentHandScore = parseInt(document.getElementById('player-' + winner + '-hand-score').innerText)
+                document.getElementById('player-' + winner + '-hand-score').innerText = currentHandScore + gameEvent.data.pointsTaken
+
             }
         })
         document.getElementById("join").remove()
@@ -222,7 +242,7 @@
             method: 'POST',
             body: JSON.stringify(cards),
             headers: {
-              'Content-Type': 'application/json'
+                'Content-Type': 'application/json'
             }
         }
         const url = baseURL + "/games/" + gameID + "/seats/" + seatID + "/passes"
@@ -232,7 +252,8 @@
                     throw Error(resp.text())
                 } else {
                     return resp.text()
-            }})
+                }
+            })
             .then(resp => {
                 document.getElementById('pass').remove()
             })
@@ -256,7 +277,7 @@
             method: 'POST',
             body: JSON.stringify(data),
             headers: {
-              'Content-Type': 'application/json'
+                'Content-Type': 'application/json'
             }
         }
         const url = baseURL + "/games/" + gameID + "/seats/" + seatID + "/plays"
@@ -266,29 +287,31 @@
                     throw Error(resp.text())
                 } else {
                     return resp.text()
-            }})
+                }
+            })
             .then(resp => {
                 document.getElementById(cardValue + "-" + cardSuit).remove()
             })
             .catch(err => console.log(err))
     }
     const allowDrop = ev => {
-      ev.preventDefault();
-      ev.dataTransfer.dropEffect = "move"
+        ev.preventDefault();
+        ev.dataTransfer.dropEffect = "move"
     }
 
     const drag = ev => {
-      ev.dataTransfer.setData("text", ev.target.id);
-      ev.dataTransfer.effectAllowed = "move"
+        ev.dataTransfer.setData("text", ev.target.id);
+        ev.dataTransfer.effectAllowed = "move"
     }
 
     const drop = ev => {
-      ev.preventDefault();
-      var data = ev.dataTransfer.getData("text");
-      ev.target.closest('.card').insertAdjacentElement('beforebegin', document.getElementById(data));
+        ev.preventDefault();
+        var data = ev.dataTransfer.getData("text");
+        ev.target.closest('.card').insertAdjacentElement('beforebegin', document.getElementById(data));
     }
 </script>
 <link rel="stylesheet" href="client/styles.css">
+
 <body>
     <div id="lobby">
         <h1>Lobby</h1>
@@ -310,8 +333,11 @@
         <div id="players"></div>
         <h3>Trick</h3>
         <div id="trick"></div>
+        <h4>Last trick</h4>
+        <div id="last-trick"></div>
         <h3>Hand</h3>
         <div id="hand"></div>
     </div>
 </body>
+
 </html>
