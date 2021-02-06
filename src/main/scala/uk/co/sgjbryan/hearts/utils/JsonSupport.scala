@@ -77,7 +77,7 @@ trait JsonSupport extends SprayJsonSupport with DefaultJsonProtocol {
     def write(suit: Suit) = JsObject(
       "name" -> JsString(suit.displayName),
       "icon" -> JsString(suit.icon),
-      "colour" -> JsString(suit.colour.toString),
+      "colour" -> JsString(suit.colour.toString.toLowerCase),
       "order" -> JsNumber(suit.order)
     )
     def read(json: JsValue): Suit = json match {
