@@ -2,7 +2,7 @@ package uk.co.sgjbryan.hearts.game
 
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.Behaviors
-import uk.co.sgjbryan.hearts.utils.Card
+import uk.co.sgjbryan.hearts.deck.Card
 
 object Trick {
 

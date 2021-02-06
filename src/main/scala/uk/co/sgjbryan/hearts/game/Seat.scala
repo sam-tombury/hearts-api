@@ -4,7 +4,8 @@ import java.util.UUID
 
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.Behaviors
-import uk.co.sgjbryan.hearts.utils.{Card, GamePlayer, Suit}
+import uk.co.sgjbryan.hearts.deck.{Card, Suit}
+import uk.co.sgjbryan.hearts.utils.GamePlayer
 
 case class Player(name: String, id: UUID, actor: ActorRef[Seat.Action]) {
   lazy val toGamePlayer: GamePlayer = GamePlayer(name, id)

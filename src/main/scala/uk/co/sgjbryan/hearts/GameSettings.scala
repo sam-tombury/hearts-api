@@ -1,14 +1,6 @@
 package uk.co.sgjbryan.hearts
 
-import uk.co.sgjbryan.hearts.utils.{
-  Ace,
-  Card,
-  Deck,
-  Hearts,
-  King,
-  Queen,
-  Spades
-}
+import uk.co.sgjbryan.hearts.deck.{Ace, Card, Deck, Hearts, King, Queen, Spades}
 
 case class GameSettings(playerCount: Int, deck: List[Card], passCount: Int) {
 

@@ -19,10 +19,10 @@ import com.typesafe.config.ConfigFactory
 import spray.json._
 import uk.co.sgjbryan.hearts.game.{Game, Player, Seat}
 import uk.co.sgjbryan.hearts.lobby.Lobby
+import uk.co.sgjbryan.hearts.deck.Card
 import uk.co.sgjbryan.hearts.utils.{
-  Card,
-  CardPlayed,
   Deal,
+  CardPlayed,
   GameCreationResponse,
   GameEvent,
   GamePlayer,

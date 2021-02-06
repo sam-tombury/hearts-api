@@ -3,6 +3,8 @@ package uk.co.sgjbryan.hearts.utils
 import java.net.URL
 import java.util.UUID
 
+import uk.co.sgjbryan.hearts.deck._
+
 import akka.http.scaladsl.marshallers.sprayjson.SprayJsonSupport
 import spray.json.{
   DefaultJsonProtocol,
@@ -75,7 +77,7 @@ trait JsonSupport extends SprayJsonSupport with DefaultJsonProtocol {
     def write(suit: Suit) = JsObject(
       "name" -> JsString(suit.displayName),
       "icon" -> JsString(suit.icon),
-      "colour" -> JsString(suit.colour),
+      "colour" -> JsString(suit.colour.toString),
       "order" -> JsNumber(suit.order)
     )
     def read(json: JsValue): Suit = json match {

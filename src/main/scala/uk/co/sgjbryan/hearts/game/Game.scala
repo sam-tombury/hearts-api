@@ -6,7 +6,8 @@ import java.util.UUID
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
 import uk.co.sgjbryan.hearts.{GameSettings, Server}
-import uk.co.sgjbryan.hearts.utils.{Card, GameCreationResponse}
+import uk.co.sgjbryan.hearts.deck.Card
+import uk.co.sgjbryan.hearts.utils.GameCreationResponse
 
 import scala.util.Random
 
@@ -15,23 +16,23 @@ object Game {
   sealed trait Message
   final case class DealHand() extends Message
   final case class TakeSeat(
-    name: String,
-    seatID: UUID,
-    replyTo: ActorRef[Game.SeatResponse]
+      name: String,
+      seatID: UUID,
+      replyTo: ActorRef[Game.SeatResponse]
   ) extends Message
   final case class PlayerReady(seatID: UUID) extends Message
   final case class FindSeat(
-    seatID: UUID,
-    replyTo: ActorRef[Option[ActorRef[Seat.Action]]]
+      seatID: UUID,
+      replyTo: ActorRef[Option[ActorRef[Seat.Action]]]
   ) extends Message
   sealed trait SeatResponse
   final case class UserAdded(player: Player) extends SeatResponse
   final case object SeatNotFound extends SeatResponse
 
   def apply(
-    gameID: UUID,
-    settings: GameSettings,
-    replyTo: ActorRef[GameCreationResponse]
+      gameID: UUID,
+      settings: GameSettings,
+      replyTo: ActorRef[GameCreationResponse]
   ): Behavior[Message] = Behaviors.setup { context =>
     context.log.info("Game {} is awaiting players", gameID)
     val seats = (for {
@@ -51,17 +52,17 @@ object Game {
 }
 
 class ScheduledGame(
-  gameID: UUID,
-  deck: List[Card],
-  seats: Map[UUID, ActorRef[Seat.Action]],
-  settings: GameSettings
+    gameID: UUID,
+    deck: List[Card],
+    seats: Map[UUID, ActorRef[Seat.Action]],
+    settings: GameSettings
 ) {
   import Game._
 
   def awaitingPlayers(
-    players: List[Player] = List(),
-    readySeats: Set[UUID] = Set(),
-    openSeats: Map[UUID, ActorRef[Seat.Action]] = seats
+      players: List[Player] = List(),
+      readySeats: Set[UUID] = Set(),
+      openSeats: Map[UUID, ActorRef[Seat.Action]] = seats
   ): Behavior[Game.Message] = Behaviors.receiveMessagePartial {
     case TakeSeat(name, seatID, replyTo) =>
       openSeats.get(seatID) map { seat =>
@@ -95,19 +96,19 @@ class ScheduledGame(
 }
 
 class Game(
-  gameID: UUID,
-  deck: List[Card],
-  players: List[Player],
-  seats: Map[UUID, ActorRef[Seat.Action]],
-  settings: GameSettings
+    gameID: UUID,
+    deck: List[Card],
+    players: List[Player],
+    seats: Map[UUID, ActorRef[Seat.Action]],
+    settings: GameSettings
 ) {
   import Game._
 
   def withSeatListener(
-    onMessage: PartialFunction[
-      (ActorContext[Game.Message], Game.Message),
-      Behavior[Game.Message]
-    ]
+      onMessage: PartialFunction[
+        (ActorContext[Game.Message], Game.Message),
+        Behavior[Game.Message]
+      ]
   ): Behavior[Game.Message] =
     Behaviors.receivePartial {
       ({ case (_, FindSeat(seatID, replyTo)) =>
@@ -134,7 +135,7 @@ class Game(
   }
 
   def dealAndPlay(
-    hand: Int
+      hand: Int
   )(context: ActorContext[Game.Message]): Behavior[Game.Message] = {
     context.log.info("Dealing hand {}", hand)
     val passList = calculatePassTo(hand)
