@@ -40,10 +40,8 @@ object Server extends App with JsonSupport {
   implicit val lobby: ActorSystem[Lobby.Message] = ActorSystem(Lobby(), "lobby")
   implicit val timeout: Timeout =
     3.seconds //TODO: consider appropriate timeouts
-  implicit val classicSystem: actor.ActorSystem =
-    lobby.classicSystem //Classic (non-typed) system needed for AkkaHTTP
   import Directives._
-  import classicSystem.dispatcher
+  import lobby.executionContext
 
   lazy val baseURL = ConfigFactory.load().getString("baseURL")
 
@@ -202,15 +200,11 @@ object Server extends App with JsonSupport {
     getFromResource("styles.css")
   }
 
-  implicit val materializer: Materializer =
-    Materializer.matFromSystem(lobby) //Explicitly specify the system provider
-  val bindingFuture = Http().bindAndHandle(
-    Route.handlerFlow(
+  val bindingFuture = Http()
+    .newServerAt("0.0.0.0", 8080)
+    .bind(
       listenRoute ~ lobbyRoute ~ joinRoute ~ playRoute ~ clientRoute ~ passRoute
-    ),
-    "0.0.0.0",
-    8080
-  )
+    )
 
   println(s"Server online at http://0.0.0.0:8080/")
 
