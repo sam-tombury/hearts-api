@@ -19,6 +19,7 @@ object Lobby {
       settings: GameSettings,
       replyTo: ActorRef[GameCreationResponse]
   ) extends Message
+  final case class EndGame(gameID: UUID) extends Message
 
   def withGames(
       openGames: Map[UUID, ActorRef[Game.Message]]
@@ -28,13 +29,14 @@ object Lobby {
         case CreateGame(settings, replyTo) =>
           val uuid = UUID.randomUUID()
           val newGame = context.spawnAnonymous(Game(uuid, settings, replyTo))
+          context.watchWith(newGame, EndGame(uuid))
           withGames(
             openGames + (uuid -> newGame)
-          ) //TODO: handle game completion/closing
+          )
         case FindGame(uuid, replyTo) =>
           replyTo ! openGames.get(uuid)
           Behaviors.same
-
+        case EndGame(gameID) => withGames(openGames - gameID)
       }
     }
 

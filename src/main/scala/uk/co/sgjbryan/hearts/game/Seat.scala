@@ -30,6 +30,7 @@ object Seat {
       extends Action
   final case class ReceivePass(cards: List[Card]) extends Action
   final case class AddListener(listener: ActorRef[Seat.Action]) extends Action
+  final case class AddListenerEffect(effect: Seat.Action => Unit) extends Action
   final case class CardPlayed(card: Card, toPlay: Option[String]) extends Action
   final case class TrickEnded(
       winner: Player,
@@ -45,12 +46,29 @@ object Seat {
   final case class InvalidPass(reason: String) extends Response
 
   def apply(seatID: UUID, game: ActorRef[Game.Message]): Behavior[Action] =
-    Behaviors.receiveMessagePartial { case AddListener(listener) =>
-      game ! Game.PlayerReady(seatID)
-      new Seat(listener)
-        .waitingForDeal() //TODO: make it possible to replace the listener in case of dropped connection (with seat secrets)
+    Behaviors.setup { context =>
+      Behaviors.receiveMessagePartial {
+        case AddListener(listener) =>
+          game ! Game.PlayerReady(seatID)
+          new Seat(listener)
+            .waitingForDeal() //TODO: make it possible to replace the listener in case of dropped connection (with seat secrets)
+
+        case AddListenerEffect(effect) =>
+          val listener = context.spawnAnonymous(SeatListener(effect))
+          game ! Game.PlayerReady(seatID)
+          new Seat(listener).waitingForDeal()
+      }
     }
 
+}
+
+object SeatListener {
+  def apply[F[_]](effect: Seat.Action => Unit): Behavior[Seat.Action] = {
+    Behaviors.receiveMessage { x =>
+      effect(x)
+      Behaviors.same
+    }
+  }
 }
 
 class Seat private (listener: ActorRef[Seat.Action]) {

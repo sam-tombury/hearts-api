@@ -1,15 +1,16 @@
 package uk.co.sgjbryan.hearts.game
 
-import java.net.URL
 import java.util.UUID
 
 import akka.actor.typed.{ActorRef, Behavior}
 import akka.actor.typed.scaladsl.{ActorContext, Behaviors}
-import uk.co.sgjbryan.hearts.{GameSettings, Server}
+import uk.co.sgjbryan.hearts.GameSettings
 import uk.co.sgjbryan.hearts.deck.Card
-import uk.co.sgjbryan.hearts.utils.GameCreationResponse
+import uk.co.sgjbryan.hearts.utils.{CreatedSeat, GameCreationResponse}
 
 import scala.util.Random
+import java.net.URLEncoder
+import java.nio.charset.StandardCharsets
 
 object Game {
 
@@ -25,6 +26,7 @@ object Game {
       seatID: UUID,
       replyTo: ActorRef[Option[ActorRef[Seat.Action]]]
   ) extends Message
+
   sealed trait SeatResponse
   final case class UserAdded(player: Player) extends SeatResponse
   final case object SeatNotFound extends SeatResponse
@@ -35,19 +37,30 @@ object Game {
       replyTo: ActorRef[GameCreationResponse]
   ): Behavior[Message] = Behaviors.setup { context =>
     context.log.info("Game {} is awaiting players", gameID)
-    val seats = (for {
-      _ <- 1 to settings.playerCount
+    val seats = for {
+      name <- settings.players
       seatID = UUID.randomUUID()
       actor = context.spawnAnonymous(Seat(seatID, context.self))
-    } yield (seatID, actor)).toMap
+    } yield (name, seatID, actor)
     replyTo ! GameCreationResponse(
       gameID,
-      seats.keys.toList,
-      seats.keys.toList map { seatID =>
-        new URL(s"${Server.clientHost}/play/game/$gameID/seat/$seatID")
+      seats map { case (name, seatID, _) =>
+        CreatedSeat(
+          name,
+          seatID,
+          s"/play/game/$gameID/seat/$seatID?name=${URLEncoder
+            .encode(name, StandardCharsets.UTF_8)}"
+        )
       }
     )
-    new ScheduledGame(gameID, settings.deck, seats, settings).awaitingPlayers()
+    new ScheduledGame(
+      gameID,
+      settings.deck,
+      (seats.map { case (_, seatID, actor) =>
+        (seatID, actor)
+      }).toMap,
+      settings
+    ).awaitingPlayers()
   }
 }
 
@@ -156,7 +169,7 @@ class Game(
           settings.passCount
         )
     }
-    if (hand >= 3)
+    if (hand >= settings.hands)
       lastHand()
     else
       playing(hand)
@@ -172,7 +185,7 @@ class Game(
 
   def lastHand(): Behavior[Game.Message] = withSeatListener {
     case (context, DealHand()) =>
-      context.log.info("Thanks for playing!")
+      context.log.info("Game {} is completed", gameID)
       Behaviors.stopped
   }
 }
