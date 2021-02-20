@@ -11,6 +11,8 @@ dockerExposedPorts := Seq(8080)
 
 val Http4sVersion = "0.21.16"
 val CirceVersion = "0.13.0"
+val ZioVersion = "1.0.4-2"
+val ZioInteropCatsVersion = "2.3.1.0"
 
 libraryDependencies ++= Seq(
   "com.typesafe.akka" %% "akka-actor-typed" % "2.6.12",
@@ -23,5 +25,7 @@ libraryDependencies ++= Seq(
   "org.http4s" %% "http4s-blaze-client" % Http4sVersion,
   "org.http4s" %% "http4s-circe" % Http4sVersion,
   "org.http4s" %% "http4s-dsl" % Http4sVersion,
-  "io.circe" %% "circe-generic" % CirceVersion
+  "io.circe" %% "circe-generic" % CirceVersion,
+  "dev.zio" %% "zio" % ZioVersion,
+  "dev.zio" %% "zio-interop-cats" % ZioInteropCatsVersion
 )

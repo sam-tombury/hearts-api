@@ -21,11 +21,9 @@ import uk.co.sgjbryan.hearts.utils.{
   SeatResponse,
   TrickWon
 }
+import uk.co.sgjbryan.hearts.utils.JsonSupport._
 import scala.concurrent.Future
-import scala.concurrent.ExecutionContext.global
 import scala.concurrent.duration._
-import cats.effect._
-import cats.effect.IO.contextShift
 import fs2.Stream
 import org.http4s._
 import org.http4s.circe._
@@ -50,76 +48,29 @@ import akka.stream.OverflowStrategy
 import fs2.concurrent.Queue
 import uk.co.sgjbryan.hearts.deck.CardValue
 import org.http4s.dsl.impl.Responses.BadRequestOps
+import zio.{ExitCode, Task, URIO, ZEnv, ZIO}
+import zio.interop.catz._
+import zio.clock.Clock
+import zio.console.putStrLn
 
-object Http4sMain extends IOApp {
+object Http4sMain extends CatsApp {
 
-  implicit val encodeCardValue: Encoder[CardValue] =
-    Encoder.forProduct3("name", "shortName", "order")(value =>
-      (value.displayName, value.shortName, value.order)
-    )
-  implicit val decodeCardValue: Decoder[CardValue] =
-    Decoder.decodeString.emapTry { str =>
-      Try {
-        str.toLowerCase match {
-          case "2"     => Two
-          case "3"     => Three
-          case "4"     => Four
-          case "5"     => Five
-          case "6"     => Six
-          case "7"     => Seven
-          case "8"     => Eight
-          case "9"     => Nine
-          case "10"    => Ten
-          case "jack"  => Jack
-          case "queen" => Queen
-          case "king"  => King
-          case "ace"   => Ace
-        }
-      }
-    }
+  type HeartsTask[+A] = ZIO[ZEnv, Throwable, A]
 
-  implicit val encodeSuit: Encoder[Suit] =
-    Encoder.forProduct4("name", "icon", "colour", "order")(suit =>
-      (
-        suit.displayName,
-        suit.icon,
-        suit.colour.toString.toLowerCase,
-        suit.order
-      )
-    )
-  implicit val decodeSuit: Decoder[Suit] = Decoder.decodeString.emapTry { str =>
-    Try {
-      str.toLowerCase match {
-        case "hearts"   => Hearts
-        case "clubs"    => Clubs
-        case "diamonds" => Diamonds
-        case "spades"   => Spades
-      }
-    }
-  }
-
-  //TODO: abstract over the effect type, need an F[_] actor
+  //TODO: abstract over the effect type, would need an F[_]-style actor
   object App {
-    def serverStream: Stream[IO, ExitCode] =
-      BlazeServerBuilder[IO](global)
+    def serverStream =
+      BlazeServerBuilder[HeartsTask](runtime.platform.executor.asEC)
         .bindHttp(port = 8080, host = "0.0.0.0")
         .withHttpApp(Routes().routes.orNotFound)
         .serve
   }
 
-//Note: this is an object so that we have the unapply method for pattern matching
-  object PlayersQueryParamMatcher
-      extends QueryParamDecoderMatcher[Int]("players")
+  case class Routes() extends Http4sDsl[HeartsTask] {
 
-  case class Routes() extends Http4sDsl[IO] {
-
-    import Http4sMain.lobby.scheduler
-    implicit val timeout: Timeout = 3.seconds
-    def fromFuture[A](thunk: => Future[A]): IO[A] = Async.fromFuture {
-      IO {
-        thunk
-      }
-    }
+    //Note: this is an object so that we have the unapply method for pattern matching
+    object PlayersQueryParamMatcher
+        extends QueryParamDecoderMatcher[Int]("players")
 
     object SeatPath {
 
@@ -134,38 +85,41 @@ object Http4sMain extends IOApp {
       }
     }
 
-    val routes: HttpRoutes[IO] =
-      HttpRoutes.of[IO] {
+    //TODO: generic F rather than Task
+    val routes: HttpRoutes[HeartsTask] =
+      HttpRoutes.of[HeartsTask] {
         case req @ POST -> Root / "api" / "games" =>
           for {
             // TODO: verify player count in decoder to give nicer error response
             settings <- req.asJsonDecode[GameSettings]
-            resp <- Ok(fromFuture(Http4sMain.createGame(settings) map {
+            resp <- Ok(Http4sMain.createGame(settings) map {
               _.asJson
-            }))
+            })
           } yield resp
         case req @ POST -> SeatPath(gameID, seatID) / "plays" =>
           for {
             card <- req.asJsonDecode[Card]
-            play <- fromFuture(Http4sMain.playCard(gameID, seatID, card))
+            play <- Http4sMain.playCard(gameID, seatID, card)
             resp <- play match {
               case Seat.Ok()                => NoContent()
+              case Seat.InvalidPass(_)      => InternalServerError()
               case Seat.InvalidPlay(reason) => BadRequest(reason)
             }
           } yield resp
         case req @ POST -> SeatPath(gameID, seatID) / "passes" =>
           for {
             cards <- req.asJsonDecode[List[Card]]
-            pass <- fromFuture(Http4sMain.passCards(gameID, seatID, cards))
+            pass <- Http4sMain.passCards(gameID, seatID, cards)
             resp <- pass match {
               case Seat.Ok()                => NoContent()
-              case Seat.InvalidPlay(reason) => BadRequest(reason)
+              case Seat.InvalidPass(reason) => BadRequest(reason)
+              case Seat.InvalidPlay(reason) => InternalServerError()
             }
           } yield resp
         case req @ POST -> SeatPath(gameID, seatID) =>
           for {
             name <- req.as[String]
-            pass <- fromFuture(Http4sMain.joinGame(gameID, seatID, name))
+            pass <- Http4sMain.joinGame(gameID, seatID, name)
             resp <- pass match {
               case Game.UserAdded(player) =>
                 Ok(
@@ -184,58 +138,86 @@ object Http4sMain extends IOApp {
             ) / "seats" / UUIDVar(
               seatID
             ) / "listen" =>
-          val listen = Queue.unbounded[IO, Seat.Action]
-          for {
-            queue <- listen
-            seat <- fromFuture(Http4sMain.findSeat(gameID, seatID))
-            /*
-            This is why we can't use a generic F currently:
-            queue.enqueue1 returns F[Unit], but the akka behaviour is impure - ideally the behavior could handle returning an F[Behavior[A]]
-            As it stands, there's no way to arbitrarily run an F (it seems this may be possible in the future using a cats.effect.std.Dispatcher[F]) - so we need an explicit IO
-             */
-            _ = seat ! Seat.AddListenerEffect(
-              queue.enqueue1(_).unsafeRunAsyncAndForget()
-            )
+          //Websockets are being closed too quickly it seems...
+          //But it seems to be killed by that first message being sent...
+          WebSocketBuilder[HeartsTask].build(
+            Stream
+              .awakeEvery[HeartsTask](100.millis)
+              .evalMap(d => putStrLn(s"It's been $d"))
+              .map(_ => Text(s"Hi again")),
+            _ => Stream.empty,
+            onClose = putStrLn("This is closed, no idea why!")
+          )
+        // val listen = Queue.unbounded[Task, Seat.Action]
+        // for {
+        //   queue <- listen
+        //   seat <- Http4sMain.findSeat(gameID, seatID)
+        //   /*
+        //   This is why we can't use a generic F currently:
+        //   queue.enqueue1 returns F[Unit], but the akka behaviour is impure - ideally the behavior could handle returning an F[Behavior[A]]
+        //   Is there a way we can modify the Akka API to handle this better?
+        //    */
+        //   _ = seat ! Seat.AddListenerEffect(msg =>
+        //     runtime.unsafeRun(queue.enqueue1(msg))
+        //   )
 
-            toClient = queue.dequeue
-              .collect(toEvent)
-              .map(ev => Text(ev.asJson.noSpaces))
-              .merge(
-                //Keep-alive pings
-                Stream
-                  .awakeEvery[IO](5.seconds)
-                  .map(_ => WebSocketFrame.Ping())
-              )
-            socket <- WebSocketBuilder[IO].build(
-              toClient,
-              _ => Stream.empty //Ignore messages received from the client
-            )
-          } yield socket
+        //   toClient = queue.dequeue
+        //     .collect(toEvent)
+        //     .map(ev => Text(ev.asJson.noSpaces))
+        //     .merge(
+        //       //Keep-alive pings
+        //       Stream
+        //         .awakeEvery[Task](5.seconds)
+        //         .map(s => {
+        //           println(s"ping $s")
+        //           Text(s"Ping $s")
+        //         })
+        //     )
+        //   socket <- WebSocketBuilder[Task].build(
+        //     toClient,
+        //     _ => Stream.empty //Ignore messages received from the client
+        //   )
+        // } yield socket
       }
 
   }
 
-  def run(args: List[String]): IO[ExitCode] =
-    App.serverStream.compile.drain.as(ExitCode.Success)
+  def run(args: List[String]): URIO[ZEnv, ExitCode] = for {
+    _ <- Stream
+      .awakeEvery[HeartsTask](1.second)
+      .evalMap(d => putStrLn(s"$d has elapsed"))
+      .take(2)
+      .compile
+      .drain
+      .cause
+    app <- App.serverStream.compile.drain.fold(
+      _ => ExitCode.failure,
+      _ => ExitCode.success
+    )
+  } yield app
 
   implicit val lobby: ActorSystem[Lobby.Message] = ActorSystem(Lobby(), "lobby")
   implicit val timeout: Timeout = 3.seconds
-  implicit override def executionContext = super.executionContext
 
   //TODO: include seatSecret (either server-encrypted seatID or generated and returned when seat taken) for auth
   //TODO: we could keep the actor in session rather than running 'findSeat' each time
-  val findSeat: (UUID, UUID) => Future[ActorRef[Seat.Action]] =
+  val findSeat: (UUID, UUID) => Task[ActorRef[Seat.Action]] =
     (gameID: UUID, seatID: UUID) =>
-      (for {
-        game <- OptionT(
+      for {
+        maybeGame <- Task.fromFuture { implicit ec =>
           lobby.ask[Option[ActorRef[Game.Message]]](Lobby.FindGame(gameID, _))
-        )
-        seat <- OptionT(
+        }
+        game <- Task.fromEither {
+          Either.fromOption(maybeGame, new Exception(s"Game $gameID not found"))
+        }
+        maybeSeat <- Task.fromFuture { implicit ec =>
           game.ask[Option[ActorRef[Seat.Action]]](Game.FindSeat(seatID, _))
-        )
-      } yield seat).value collect { case Some(seat) =>
-        seat
-      }
+        }
+        //TODO: clean these up
+        seat <- Task.fromEither {
+          Either.fromOption(maybeSeat, new Exception(s"Seat $seatID not found"))
+        }
+      } yield seat
 
   val toEvent: PartialFunction[Seat.Action, CirceGameEvent] = {
     case Seat.ReceiveDeal(holding, _, passTo, firstLead, passCount) =>
@@ -263,27 +245,33 @@ object Http4sMain extends IOApp {
   }
 
   val playCard = (gameID: UUID, seatID: UUID, card: Card) =>
-    findSeat(gameID, seatID) flatMap {
-      _.ask[Seat.Response](Seat.Play(card, _))
+    findSeat(gameID, seatID) flatMap { seat =>
+      Task.fromFuture(_ => seat.ask[Seat.Response](Seat.Play(card, _)))
     }
 
   val passCards = (gameID: UUID, seatID: UUID, cards: List[Card]) =>
-    findSeat(gameID, seatID) flatMap {
-      _.ask[Seat.Response](Seat.Pass(cards, _))
+    findSeat(gameID, seatID) flatMap { seat =>
+      Task.fromFuture(_ => seat.ask[Seat.Response](Seat.Pass(cards, _)))
     }
 
   val createGame = (settings: GameSettings) =>
-    lobby.ask[GameCreationResponse](
-      Lobby.CreateGame(settings, _)
+    Task.fromFuture(_ =>
+      lobby.ask[GameCreationResponse](
+        Lobby.CreateGame(settings, _)
+      )
     )
 
-  //TODO: make these F[_] instead of Future
+  //TODO: make these F[_] instead of Task?
   val joinGame = (gameID: UUID, seatID: UUID, name: String) =>
     for {
-      game <- lobby
-        .ask[Option[ActorRef[Game.Message]]](Lobby.FindGame(gameID, _))
-      resp <- game traverse {
-        _.ask[Game.SeatResponse](Game.TakeSeat(name, seatID, _))
+      game <- Task.fromFuture(_ =>
+        lobby
+          .ask[Option[ActorRef[Game.Message]]](Lobby.FindGame(gameID, _))
+      )
+      resp <- game traverse { g =>
+        Task.fromFuture(_ =>
+          g.ask[Game.SeatResponse](Game.TakeSeat(name, seatID, _))
+        )
       }
     } yield resp getOrElse Game.SeatNotFound
 
