@@ -4,7 +4,9 @@ import java.util.UUID
 
 import uk.co.sgjbryan.hearts.deck._
 import io.circe.{Decoder, Encoder, Json}
+import io.circe.syntax._
 import scala.util.Try
+import fs2.Stream
 
 case class SeatResponse(name: String, seatID: UUID, gameID: UUID)
 
@@ -82,4 +84,15 @@ object JsonSupport {
       }
     }
   }
+
+  implicit class JsonStream[M[_], A: Encoder](stream: Stream[M, A]) {
+    import Stream._
+    def asJsonArray: Stream[M, String] =
+      emit("[") ++
+        stream
+          .map(_.asJson.noSpaces)
+          .intersperse(",") ++
+        emit("]")
+  }
+
 }

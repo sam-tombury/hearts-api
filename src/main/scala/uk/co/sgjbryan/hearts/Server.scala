@@ -1,57 +1,58 @@
 package uk.co.sgjbryan.hearts
 
 import java.util.UUID
+
+import scala.concurrent.Future
+import scala.concurrent.duration._
+import scala.util.Try
+
 import akka.actor
+import akka.actor.typed.ActorRef
+import akka.actor.typed.ActorSystem
 import akka.actor.typed.scaladsl.AskPattern._
-import akka.actor.typed.{ActorRef, ActorSystem}
+import akka.stream.OverflowStrategy
 import akka.util.Timeout
+import cats.Monad
 import cats.data.OptionT
 import cats.implicits._
 import com.typesafe.config.ConfigFactory
-import uk.co.sgjbryan.hearts.game.{Game, Player, Seat}
-import uk.co.sgjbryan.hearts.lobby.Lobby
-import uk.co.sgjbryan.hearts.deck._
-import uk.co.sgjbryan.hearts.utils.{
-  CardPlayed,
-  CirceGameEvent,
-  Deal,
-  GameCreationResponse,
-  GamePlayer,
-  Points,
-  SeatResponse,
-  TrickWon
-}
-import uk.co.sgjbryan.hearts.utils.JsonSupport._
-import scala.concurrent.Future
-import scala.concurrent.duration._
 import fs2.Stream
+import fs2.concurrent.Queue
+import io.circe.Decoder
+import io.circe.Encoder
+import io.circe.Json
+import io.circe.generic.auto._
+import io.circe.syntax._
 import org.http4s._
 import org.http4s.circe._
 import org.http4s.dsl.Http4sDsl
-import org.http4s.syntax.kleisli._
-import org.http4s.server.blaze.BlazeServerBuilder
-import io.circe.Json
-import io.circe.syntax._
-import io.circe.generic.auto._
 import org.http4s.dsl.impl.QueryParamDecoderMatcher
-import cats.Monad
-import io.circe.Decoder
-import io.circe.Encoder
-import scala.util.Try
-
-import org.http4s.server.websocket._
-import org.http4s.websocket.WebSocketFrame
-import org.http4s.websocket.WebSocketFrame._
-import fs2.Pipe
-import akka.stream.typed.scaladsl.ActorSource
-import akka.stream.OverflowStrategy
-import fs2.concurrent.Queue
-import uk.co.sgjbryan.hearts.deck.CardValue
 import org.http4s.dsl.impl.Responses.BadRequestOps
-import zio.{ExitCode, Task, URIO, ZEnv, ZIO}
-import zio.interop.catz._
+import org.http4s.server.blaze.BlazeServerBuilder
+import org.http4s.syntax.kleisli._
+import uk.co.sgjbryan.hearts.deck.CardValue
+import uk.co.sgjbryan.hearts.deck._
+import uk.co.sgjbryan.hearts.game.Game
+import uk.co.sgjbryan.hearts.game.Player
+import uk.co.sgjbryan.hearts.game.Seat
+import uk.co.sgjbryan.hearts.lobby.Lobby
+import uk.co.sgjbryan.hearts.utils.CardPlayed
+import uk.co.sgjbryan.hearts.utils.CirceGameEvent
+import uk.co.sgjbryan.hearts.utils.Deal
+import uk.co.sgjbryan.hearts.utils.GameCreationResponse
+import uk.co.sgjbryan.hearts.utils.GamePlayer
+import uk.co.sgjbryan.hearts.utils.JsonSupport._
+import uk.co.sgjbryan.hearts.utils.Points
+import uk.co.sgjbryan.hearts.utils.SeatResponse
+import uk.co.sgjbryan.hearts.utils.TrickWon
+import zio.ExitCode
+import zio.Task
+import zio.URIO
+import zio.ZEnv
+import zio.ZIO
 import zio.clock.Clock
 import zio.console.putStrLn
+import zio.interop.catz._
 
 object Http4sMain extends CatsApp {
 
@@ -132,69 +133,34 @@ object Http4sMain extends CatsApp {
               case Game.SeatNotFound => NotFound()
             }
           } yield resp
-        //TODO: just a streamed http response instead? We ignore client messages currently
-        case GET -> Root / "api" / "ws" / "games" / UUIDVar(
-              gameID
-            ) / "seats" / UUIDVar(
-              seatID
-            ) / "listen" =>
-          //Websockets are being closed too quickly it seems...
-          //But it seems to be killed by that first message being sent...
-          WebSocketBuilder[HeartsTask].build(
-            Stream
-              .awakeEvery[HeartsTask](100.millis)
-              .evalMap(d => putStrLn(s"It's been $d"))
-              .map(_ => Text(s"Hi again")),
-            _ => Stream.empty,
-            onClose = putStrLn("This is closed, no idea why!")
-          )
-        // val listen = Queue.unbounded[Task, Seat.Action]
-        // for {
-        //   queue <- listen
-        //   seat <- Http4sMain.findSeat(gameID, seatID)
-        //   /*
-        //   This is why we can't use a generic F currently:
-        //   queue.enqueue1 returns F[Unit], but the akka behaviour is impure - ideally the behavior could handle returning an F[Behavior[A]]
-        //   Is there a way we can modify the Akka API to handle this better?
-        //    */
-        //   _ = seat ! Seat.AddListenerEffect(msg =>
-        //     runtime.unsafeRun(queue.enqueue1(msg))
-        //   )
-
-        //   toClient = queue.dequeue
-        //     .collect(toEvent)
-        //     .map(ev => Text(ev.asJson.noSpaces))
-        //     .merge(
-        //       //Keep-alive pings
-        //       Stream
-        //         .awakeEvery[Task](5.seconds)
-        //         .map(s => {
-        //           println(s"ping $s")
-        //           Text(s"Ping $s")
-        //         })
-        //     )
-        //   socket <- WebSocketBuilder[Task].build(
-        //     toClient,
-        //     _ => Stream.empty //Ignore messages received from the client
-        //   )
-        // } yield socket
+        case GET -> SeatPath(gameID, seatID) / "listen" =>
+          val listen = Queue.unbounded[HeartsTask, Seat.Action]
+          for {
+            queue <- listen
+            seat <- Http4sMain.findSeat(gameID, seatID)
+            /*
+            This is why we can't use a generic F currently:
+            queue.enqueue1 returns F[Unit], but the akka behaviour is impure - ideally the behavior could handle returning an F[Behavior[A]]
+            Is there a way we can modify the Akka API to handle this better?
+             */
+            _ = seat ! Seat.AddListenerEffect(msg =>
+              runtime.unsafeRun(queue.enqueue1(msg))
+            )
+            resp <- Ok(
+              queue.dequeue
+                .collect(toEvent)
+                .asJsonArray
+            )
+          } yield resp
       }
 
   }
 
-  def run(args: List[String]): URIO[ZEnv, ExitCode] = for {
-    _ <- Stream
-      .awakeEvery[HeartsTask](1.second)
-      .evalMap(d => putStrLn(s"$d has elapsed"))
-      .take(2)
-      .compile
-      .drain
-      .cause
-    app <- App.serverStream.compile.drain.fold(
+  def run(args: List[String]): URIO[ZEnv, ExitCode] =
+    App.serverStream.compile.drain.fold(
       _ => ExitCode.failure,
       _ => ExitCode.success
     )
-  } yield app
 
   implicit val lobby: ActorSystem[Lobby.Message] = ActorSystem(Lobby(), "lobby")
   implicit val timeout: Timeout = 3.seconds
