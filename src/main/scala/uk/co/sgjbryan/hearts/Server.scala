@@ -29,7 +29,10 @@ import org.http4s.dsl.Http4sDsl
 import org.http4s.dsl.impl.QueryParamDecoderMatcher
 import org.http4s.dsl.impl.Responses.BadRequestOps
 import org.http4s.server.blaze.BlazeServerBuilder
+import org.http4s.server.websocket.WebSocketBuilder
 import org.http4s.syntax.kleisli._
+import org.http4s.websocket.WebSocketFrame.Ping
+import org.http4s.websocket.WebSocketFrame.Text
 import uk.co.sgjbryan.hearts.deck.CardValue
 import uk.co.sgjbryan.hearts.deck._
 import uk.co.sgjbryan.hearts.game.Game
@@ -50,8 +53,6 @@ import zio.Task
 import zio.URIO
 import zio.ZEnv
 import zio.ZIO
-import zio.clock.Clock
-import zio.console.putStrLn
 import zio.interop.catz._
 
 object Http4sMain extends CatsApp {
@@ -138,12 +139,7 @@ object Http4sMain extends CatsApp {
           for {
             queue <- listen
             seat <- Http4sMain.findSeat(gameID, seatID)
-            /*
-            This is why we can't use a generic F currently:
-            queue.enqueue1 returns F[Unit], but the akka behaviour is impure - ideally the behavior could handle returning an F[Behavior[A]]
-            Is there a way we can modify the Akka API to handle this better?
-             */
-            _ = seat ! Seat.AddListenerEffect(msg =>
+            _ = seat ! Seat.AddListener(msg =>
               runtime.unsafeRun(queue.enqueue1(msg))
             )
             resp <- Ok(
@@ -151,6 +147,32 @@ object Http4sMain extends CatsApp {
                 .collect(toEvent)
                 .asJsonArray
             )
+          } yield resp
+        case GET -> SeatPath(gameID, seatID) / "ws" =>
+          val listen = Queue.unbounded[HeartsTask, Seat.Action]
+          for {
+            queue <- listen
+            seat <- Http4sMain.findSeat(gameID, seatID)
+            /*
+            This is why we can't use a generic F currently:
+            queue.enqueue1 returns F[Unit], but the akka behaviour is impure - ideally the behavior could handle returning an F[Behavior[A]]
+            Is there a way we can modify the Akka API to handle this better?
+             */
+            _ = seat ! Seat.AddListener(msg =>
+              runtime.unsafeRun(queue.enqueue1(msg))
+            )
+            resp <- WebSocketBuilder[HeartsTask]
+              .build(
+                queue.dequeue
+                  .collect(toEvent)
+                  .map(msg => Text(msg.asJson.noSpaces))
+                  .merge(
+                    Stream
+                      .awakeEvery[HeartsTask](3.seconds)
+                      .map(_ => Ping())
+                  ),
+                _.drain
+              )
           } yield resp
       }
 
@@ -165,23 +187,33 @@ object Http4sMain extends CatsApp {
   implicit val lobby: ActorSystem[Lobby.Message] = ActorSystem(Lobby(), "lobby")
   implicit val timeout: Timeout = 3.seconds
 
+  val findGame: UUID => Task[ActorRef[Game.Message]] = gameID =>
+    for {
+      maybeGame <- Task.fromFuture { _ =>
+        lobby ? (Lobby.FindGame(gameID, _))
+      }
+      game <- Task.fromEither {
+        Either.fromOption(
+          maybeGame,
+          new Exception(s"Game $gameID not found")
+        )
+      }
+    } yield game
+
   //TODO: include seatSecret (either server-encrypted seatID or generated and returned when seat taken) for auth
-  //TODO: we could keep the actor in session rather than running 'findSeat' each time
+  //TODO: we could keep the ActorRef in stateful map rather than running 'findSeat' each time
   val findSeat: (UUID, UUID) => Task[ActorRef[Seat.Action]] =
-    (gameID: UUID, seatID: UUID) =>
+    (gameID, seatID) =>
       for {
-        maybeGame <- Task.fromFuture { implicit ec =>
-          lobby.ask[Option[ActorRef[Game.Message]]](Lobby.FindGame(gameID, _))
+        game <- findGame(gameID)
+        maybeSeat <- Task.fromFuture { _ =>
+          game ? (Game.FindSeat(seatID, _))
         }
-        game <- Task.fromEither {
-          Either.fromOption(maybeGame, new Exception(s"Game $gameID not found"))
-        }
-        maybeSeat <- Task.fromFuture { implicit ec =>
-          game.ask[Option[ActorRef[Seat.Action]]](Game.FindSeat(seatID, _))
-        }
-        //TODO: clean these up
         seat <- Task.fromEither {
-          Either.fromOption(maybeSeat, new Exception(s"Seat $seatID not found"))
+          Either.fromOption(
+            maybeSeat,
+            new Exception(s"Seat $seatID in game $gameID not found")
+          )
         }
       } yield seat
 
@@ -212,33 +244,23 @@ object Http4sMain extends CatsApp {
 
   val playCard = (gameID: UUID, seatID: UUID, card: Card) =>
     findSeat(gameID, seatID) flatMap { seat =>
-      Task.fromFuture(_ => seat.ask[Seat.Response](Seat.Play(card, _)))
+      Task.fromFuture(_ => seat ? (Seat.Play(card, _)))
     }
 
   val passCards = (gameID: UUID, seatID: UUID, cards: List[Card]) =>
     findSeat(gameID, seatID) flatMap { seat =>
-      Task.fromFuture(_ => seat.ask[Seat.Response](Seat.Pass(cards, _)))
+      Task.fromFuture(_ => seat ? (Seat.Pass(cards, _)))
     }
 
   val createGame = (settings: GameSettings) =>
-    Task.fromFuture(_ =>
-      lobby.ask[GameCreationResponse](
-        Lobby.CreateGame(settings, _)
-      )
-    )
+    Task.fromFuture(_ => lobby ? (Lobby.CreateGame(settings, _)))
 
-  //TODO: make these F[_] instead of Task?
   val joinGame = (gameID: UUID, seatID: UUID, name: String) =>
-    for {
-      game <- Task.fromFuture(_ =>
-        lobby
-          .ask[Option[ActorRef[Game.Message]]](Lobby.FindGame(gameID, _))
-      )
-      resp <- game traverse { g =>
-        Task.fromFuture(_ =>
-          g.ask[Game.SeatResponse](Game.TakeSeat(name, seatID, _))
-        )
-      }
-    } yield resp getOrElse Game.SeatNotFound
+    (for {
+      game <- findGame(gameID)
+      resp <- Task.fromFuture(_ => game ? (Game.TakeSeat(name, seatID, _)))
+    } yield resp).recover { _ =>
+      Game.SeatNotFound
+    }
 
 }
