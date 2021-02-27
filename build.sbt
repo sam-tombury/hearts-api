@@ -1,6 +1,6 @@
 name := "hearts-api"
 
-version := "0.3"
+version := "0.4"
 
 scalaVersion := "2.13.4"
 
@@ -8,6 +8,8 @@ enablePlugins(JavaAppPackaging)
 enablePlugins(DockerPlugin)
 
 dockerExposedPorts := Seq(8080)
+dockerBaseImage := "openjdk:11-jre-slim"
+dockerUpdateLatest := true
 
 val Http4sVersion = "0.21.16"
 val CirceVersion = "0.13.0"
