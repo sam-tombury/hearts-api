@@ -29,5 +29,5 @@ jobs:
         ECR_REPOSITORY: hearts-client
         IMAGE_TAG: latest
       run:
-        docker image -t hearts-client:latest $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker image tag hearts-client:latest $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
