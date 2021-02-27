@@ -26,8 +26,8 @@ jobs:
     - name: Push to ECR
       env:
         ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-        ECR_REPOSITORY: hearts-client
+        ECR_REPOSITORY: hearts-api
         IMAGE_TAG: latest
       run: |
-        docker image tag hearts-client:latest $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+        docker image tag hearts-api:latest $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
         docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
