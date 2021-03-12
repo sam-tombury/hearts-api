@@ -52,17 +52,21 @@ import zio.ExitCode
 import zio.Task
 import zio.URIO
 import zio.ZEnv
-import zio.ZIO
+import zio.RIO
 import zio.interop.catz._
+import uk.co.sgjbryan.hearts.services.HeartsEnv
+import scala.concurrent.ExecutionContext
+import cats.effect.ConcurrentEffect
+import uk.co.sgjbryan.hearts.services.{GameRepo, SeatHandler, SeatRepo}
 
 object Http4sMain extends CatsApp {
 
-  type HeartsTask[+A] = ZIO[ZEnv, Throwable, A]
+  type HeartsTask[+A] = RIO[ZEnv with HeartsEnv, A]
 
   //TODO: abstract over the effect type, would need an F[_]-style actor
-  object App {
-    def serverStream =
-      BlazeServerBuilder[HeartsTask](runtime.platform.executor.asEC)
+  object ServerApp {
+    def serverStream(implicit ce: ConcurrentEffect[HeartsTask]) =
+      BlazeServerBuilder[HeartsTask](ExecutionContext.global)
         .bindHttp(port = 8080, host = "0.0.0.0")
         .withHttpApp(Routes().routes.orNotFound)
         .serve
@@ -94,14 +98,14 @@ object Http4sMain extends CatsApp {
           for {
             // TODO: verify player count in decoder to give nicer error response
             settings <- req.asJsonDecode[GameSettings]
-            resp <- Ok(Http4sMain.createGame(settings) map {
+            resp <- Ok(GameRepo.createGame(settings) map {
               _.asJson
             })
           } yield resp
         case req @ POST -> SeatPath(gameID, seatID) / "plays" =>
           for {
             card <- req.asJsonDecode[Card]
-            play <- Http4sMain.playCard(gameID, seatID, card)
+            play <- SeatHandler.playCard(gameID, seatID, card)
             resp <- play match {
               case Seat.Ok()                => NoContent()
               case Seat.InvalidPass(_)      => InternalServerError()
@@ -111,7 +115,7 @@ object Http4sMain extends CatsApp {
         case req @ POST -> SeatPath(gameID, seatID) / "passes" =>
           for {
             cards <- req.asJsonDecode[List[Card]]
-            pass <- Http4sMain.passCards(gameID, seatID, cards)
+            pass <- SeatHandler.passCards(gameID, seatID, cards)
             resp <- pass match {
               case Seat.Ok()                => NoContent()
               case Seat.InvalidPass(reason) => BadRequest(reason)
@@ -121,7 +125,7 @@ object Http4sMain extends CatsApp {
         case req @ POST -> SeatPath(gameID, seatID) =>
           for {
             name <- req.as[String]
-            pass <- Http4sMain.joinGame(gameID, seatID, name)
+            pass <- SeatRepo.joinGame(gameID, seatID, name)
             resp <- pass match {
               case Game.UserAdded(player) =>
                 Ok(
@@ -135,10 +139,10 @@ object Http4sMain extends CatsApp {
             }
           } yield resp
         case GET -> SeatPath(gameID, seatID) / "listen" =>
-          val listen = Queue.unbounded[HeartsTask, Seat.Action]
+          val listen = Queue.unbounded[Task, Seat.Action]
           for {
             queue <- listen
-            seat <- Http4sMain.findSeat(gameID, seatID)
+            seat <- SeatRepo.findSeat(gameID, seatID)
             _ = seat ! Seat.AddListener(msg =>
               runtime.unsafeRun(queue.enqueue1(msg))
             )
@@ -146,17 +150,35 @@ object Http4sMain extends CatsApp {
               queue.dequeue
                 .collect(toEvent)
                 .asJsonArray
+                .covary[HeartsTask]
             )
           } yield resp
         case GET -> SeatPath(gameID, seatID) / "ws" =>
-          val listen = Queue.unbounded[HeartsTask, Seat.Action]
+          val listen = Queue.unbounded[Task, Seat.Action]
           for {
             queue <- listen
-            seat <- Http4sMain.findSeat(gameID, seatID)
+            seat <- SeatRepo.findSeat(gameID, seatID)
             /*
             This is why we can't use a generic F currently:
             queue.enqueue1 returns F[Unit], but the akka behaviour is impure - ideally the behavior could handle returning an F[Behavior[A]]
             Is there a way we can modify the Akka API to handle this better?
+
+            We may be able to create a pretty simple DSL for our State Machines anyway...
+
+            Parameters:
+            Message[Res] <- message, expecting response of type Res. Maybe need an effect/error type here...
+            State[M[_]] <- receives messages of type M[_], 'handleMessage' method: M[Res] => F[(State[M], Res)] returning new state and expected type
+            case class State1 extends State[MyMessage]
+            Then it's all handled with a ref... Ref[State] and update method
+            Then we have Actor[M[_]] which encapsulates the Ref and exposes 'handleMessage' M[Res] => F[Res] - updating the ref and returning the Res
+            So 'enacting' the messages will be via http etc... e.g. resp <- actor.handleMessage(Seat.AddListener)
+
+            State <- base class which has a 'handleMessage' method:
+            sealed abstract class A extends State[A]
+            case class State1 extends A
+            case class State2 extends A
+            Message[B] <- base wrapper class for messages...
+            sealed class MyMessage[B] extends Message[B]
              */
             _ = seat ! Seat.AddListener(msg =>
               runtime.unsafeRun(queue.enqueue1(msg))
@@ -179,43 +201,16 @@ object Http4sMain extends CatsApp {
   }
 
   def run(args: List[String]): URIO[ZEnv, ExitCode] =
-    App.serverStream.compile.drain.fold(
-      _ => ExitCode.failure,
-      _ => ExitCode.success
-    )
-
-  implicit val lobby: ActorSystem[Lobby.Message] = ActorSystem(Lobby(), "lobby")
-  implicit val timeout: Timeout = 3.seconds
-
-  val findGame: UUID => Task[ActorRef[Game.Message]] = gameID =>
-    for {
-      maybeGame <- Task.fromFuture { _ =>
-        lobby ? (Lobby.FindGame(gameID, _))
+    RIO
+      .concurrentEffectWith[ZEnv with HeartsEnv, Nothing, ExitCode] {
+        implicit ce =>
+          ServerApp.serverStream.compile.drain
+            .fold(
+              _ => ExitCode.failure,
+              _ => ExitCode.success
+            )
       }
-      game <- Task.fromEither {
-        Either.fromOption(
-          maybeGame,
-          new Exception(s"Game $gameID not found")
-        )
-      }
-    } yield game
-
-  //TODO: include seatSecret (either server-encrypted seatID or generated and returned when seat taken) for auth
-  //TODO: we could keep the ActorRef in stateful map rather than running 'findSeat' each time
-  val findSeat: (UUID, UUID) => Task[ActorRef[Seat.Action]] =
-    (gameID, seatID) =>
-      for {
-        game <- findGame(gameID)
-        maybeSeat <- Task.fromFuture { _ =>
-          game ? (Game.FindSeat(seatID, _))
-        }
-        seat <- Task.fromEither {
-          Either.fromOption(
-            maybeSeat,
-            new Exception(s"Seat $seatID in game $gameID not found")
-          )
-        }
-      } yield seat
+      .provideCustomLayer(HeartsEnv.live)
 
   val toEvent: PartialFunction[Seat.Action, CirceGameEvent] = {
     case Seat.ReceiveDeal(holding, _, passTo, firstLead, passCount) =>
@@ -241,26 +236,5 @@ object Http4sMain extends CatsApp {
         points.map(p => Points(p._1.toGamePlayer, p._2)).asJson
       )
   }
-
-  val playCard = (gameID: UUID, seatID: UUID, card: Card) =>
-    findSeat(gameID, seatID) flatMap { seat =>
-      Task.fromFuture(_ => seat ? (Seat.Play(card, _)))
-    }
-
-  val passCards = (gameID: UUID, seatID: UUID, cards: List[Card]) =>
-    findSeat(gameID, seatID) flatMap { seat =>
-      Task.fromFuture(_ => seat ? (Seat.Pass(cards, _)))
-    }
-
-  val createGame = (settings: GameSettings) =>
-    Task.fromFuture(_ => lobby ? (Lobby.CreateGame(settings, _)))
-
-  val joinGame = (gameID: UUID, seatID: UUID, name: String) =>
-    (for {
-      game <- findGame(gameID)
-      resp <- Task.fromFuture(_ => game ? (Game.TakeSeat(name, seatID, _)))
-    } yield resp).recover { _ =>
-      Game.SeatNotFound
-    }
 
 }

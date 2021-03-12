@@ -3,6 +3,7 @@ name := "hearts-api"
 version := "0.4"
 
 scalaVersion := "2.13.4"
+scalacOptions += "-Ymacro-annotations"
 
 enablePlugins(JavaAppPackaging)
 enablePlugins(DockerPlugin)
@@ -29,5 +30,6 @@ libraryDependencies ++= Seq(
   "org.http4s" %% "http4s-dsl" % Http4sVersion,
   "io.circe" %% "circe-generic" % CirceVersion,
   "dev.zio" %% "zio" % ZioVersion,
-  "dev.zio" %% "zio-interop-cats" % ZioInteropCatsVersion
+  "dev.zio" %% "zio-interop-cats" % ZioInteropCatsVersion,
+  "dev.zio" %% "zio-macros" % ZioVersion
 )
